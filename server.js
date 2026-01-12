@@ -3,8 +3,10 @@ const puppeteer = require('puppeteer');
 const bodyParser = require('body-parser');
 
 const app = express();
+// Railway automatically sets process.env.PORT
 const PORT = process.env.PORT || 3000;
 
+// Allow large HTML payloads (50mb)
 app.use(bodyParser.json({ limit: '50mb' }));
 
 let browser;
@@ -15,81 +17,50 @@ async function initBrowser() {
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--lang=ar-EG'
+      '--disable-dev-shm-usage', // Critical for Docker/Railway memory
+      '--disable-gpu'
     ]
   });
-  console.log("Browser Ready (PDF + Images)");
+  console.log("Browser Launched Successfully");
 }
 
 initBrowser();
 
-// --- PDF ENDPOINT ---
 app.post('/generate-pdf', async (req, res) => {
-  let { html } = req.body;
-  if (!html) return res.status(400).send({ error: "Missing html" });
-  if (!html.includes('<meta charset="UTF-8">')) html = `<meta charset="UTF-8">\n` + html;
+  const { html } = req.body;
+
+  if (!html) {
+    return res.status(400).send({ error: "Missing 'html' in request body" });
+  }
 
   let page;
   try {
     page = await browser.newPage();
+    
+    // Load the HTML content
     await page.setContent(html, { waitUntil: 'networkidle0' });
+
+    // Generate PDF
     const pdfBuffer = await page.pdf({
       format: 'A4',
       printBackground: true,
-      margin: { top: '20px', right: '20px', bottom: '20px', left: '20px' }
+      margin: { top: '0px', right: '0px', bottom: '0px', left: '0px' }
     });
-    res.set({ 'Content-Type': 'application/pdf', 'Content-Length': pdfBuffer.length });
-    res.send(pdfBuffer);
-  } catch (error) {
-    console.error("PDF Error:", error);
-    if (!browser || !browser.isConnected()) await initBrowser();
-    res.status(500).send({ error: "Failed" });
-  } finally {
-    if (page) await page.close();
-  }
-});
-
-// --- NEW: SCREENSHOT ENDPOINT ---
-app.post('/screenshot', async (req, res) => {
-  let { html, type = 'png', quality = 80, fullPage = true } = req.body;
-  
-  if (!html) return res.status(400).send({ error: "Missing html" });
-  if (!html.includes('<meta charset="UTF-8">')) html = `<meta charset="UTF-8">\n` + html;
-
-  let page;
-  try {
-    page = await browser.newPage();
-    
-    // Set a default viewport (width is important for responsiveness)
-    await page.setViewport({ width: 1280, height: 800, deviceScaleFactor: 2 }); // Scale 2 = Retina quality
-
-    await page.setContent(html, { waitUntil: 'networkidle0' });
-
-    const options = {
-      fullPage: fullPage,
-      type: type // 'png' or 'jpeg'
-    };
-
-    // Quality is only valid for jpeg
-    if (type === 'jpeg') {
-      options.quality = quality;
-    }
-
-    const imgBuffer = await page.screenshot(options);
 
     res.set({
-      'Content-Type': `image/${type}`,
-      'Content-Length': imgBuffer.length,
+      'Content-Type': 'application/pdf',
+      'Content-Length': pdfBuffer.length,
     });
     
-    res.send(imgBuffer);
+    res.send(pdfBuffer);
 
   } catch (error) {
-    console.error("Screenshot Error:", error);
-    if (!browser || !browser.isConnected()) await initBrowser();
-    res.status(500).send({ error: "Failed" });
+    console.error("PDF Gen Error:", error);
+    // If browser crashed, try to restart it
+    if (!browser || !browser.isConnected()) {
+        await initBrowser();
+    }
+    res.status(500).send({ error: "Generation failed" });
   } finally {
     if (page) await page.close();
   }
@@ -101,5 +72,5 @@ process.on('SIGINT', async () => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Listening on ${PORT}`);
+  console.log(`Server listening on port ${PORT}`);
 });
