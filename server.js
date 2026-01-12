@@ -3,24 +3,25 @@ const puppeteer = require('puppeteer');
 const bodyParser = require('body-parser');
 
 const app = express();
-const PORT = 3000;
+// Railway automatically sets process.env.PORT
+const PORT = process.env.PORT || 3000;
 
-// Increase payload limit to 50mb in case your HTML strings are huge
+// Allow large HTML payloads (50mb)
 app.use(bodyParser.json({ limit: '50mb' }));
 
 let browser;
 
-// Initialize the browser once on startup to save time
 async function initBrowser() {
   browser = await puppeteer.launch({
     headless: "new",
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage' // Helps with memory in Docker/VPS envs
+      '--disable-dev-shm-usage', // Critical for Docker/Railway memory
+      '--disable-gpu'
     ]
   });
-  console.log("Create Browser Instance: OK");
+  console.log("Browser Launched Successfully");
 }
 
 initBrowser();
@@ -34,23 +35,18 @@ app.post('/generate-pdf', async (req, res) => {
 
   let page;
   try {
-    // Open a new tab
     page = await browser.newPage();
-
-    // Set the content directly from your POST body
-    await page.setContent(html, { 
-        waitUntil: 'networkidle0' // Wait for any internal assets/fonts to load
-    });
+    
+    // Load the HTML content
+    await page.setContent(html, { waitUntil: 'networkidle0' });
 
     // Generate PDF
-    // 'printBackground' ensures CSS colors/images render accurately
     const pdfBuffer = await page.pdf({
       format: 'A4',
-      printBackground: true, 
+      printBackground: true,
       margin: { top: '0px', right: '0px', bottom: '0px', left: '0px' }
     });
 
-    // Send the PDF back as a binary response
     res.set({
       'Content-Type': 'application/pdf',
       'Content-Length': pdfBuffer.length,
@@ -59,20 +55,22 @@ app.post('/generate-pdf', async (req, res) => {
     res.send(pdfBuffer);
 
   } catch (error) {
-    console.error("PDF Generation Error:", error);
-    res.status(500).send({ error: "Failed to generate PDF" });
+    console.error("PDF Gen Error:", error);
+    // If browser crashed, try to restart it
+    if (!browser || !browser.isConnected()) {
+        await initBrowser();
+    }
+    res.status(500).send({ error: "Generation failed" });
   } finally {
-    // Always close the tab to prevent memory leaks
     if (page) await page.close();
   }
 });
 
-// Graceful shutdown
 process.on('SIGINT', async () => {
   if (browser) await browser.close();
   process.exit();
 });
 
 app.listen(PORT, () => {
-  console.log(`PDF API listening on http://localhost:${PORT}`);
+  console.log(`Server listening on port ${PORT}`);
 });
